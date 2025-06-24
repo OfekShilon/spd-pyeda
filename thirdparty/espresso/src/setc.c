@@ -509,6 +509,12 @@ d1_order(set **a, set **b)
     return 0;
 }
 
+int
+d1_order_cmp(const void *a, const void *b)
+{
+    return d1_order((set **) a, (set **) b);
+}
+
 // desc1 -- comparison (without indirection) for descending sort
 // also has effect of handling NULL pointers,and a NULL pointer has smallest
 // order

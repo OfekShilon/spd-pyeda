@@ -186,8 +186,8 @@ static set_family_t *compl_merge(set **T1, set_family_t *L, set_family_t *R, set
 
     /* Sort the arrays for a distance-1 merge */
     set_copy(CUBE.temp[0], CUBE.var_mask[var]);
-    qsort((char *) (L1 = sf_list(L)), L->count, sizeof(set *), d1_order);
-    qsort((char *) (R1 = sf_list(R)), R->count, sizeof(set *), d1_order);
+    qsort((char *) (L1 = sf_list(L)), L->count, sizeof(set *), d1_order_cmp);
+    qsort((char *) (R1 = sf_list(R)), R->count, sizeof(set *), d1_order_cmp);
 
     /* Perform distance-1 merge */
     compl_d1merge(L1, R1);

@@ -538,6 +538,7 @@ int cactive(set *a);
 int cdist(set *a, set *b);
 int cdist01(set *a, set *b);
 int d1_order(set **a, set **b);
+int d1_order_cmp(const void *a, const void *b);
 int desc1(set *a, set *b);
 int descend(set **a, set **b);
 int lex_order(set **a, set **b);
