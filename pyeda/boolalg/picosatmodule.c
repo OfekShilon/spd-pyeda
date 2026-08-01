@@ -32,24 +32,13 @@ PyDoc_STRVAR(Error_doc, "PicoSAT Error");
 static PyObject *Error;
 
 
-/* Pass these functions to picosat_minit to use Python's memory manager. */
-inline static void *
-_pymalloc(void *pmgr, size_t nbytes)
-{
-    return PyMem_Malloc(nbytes);
-}
-
-inline static void *
-_pyrealloc(void *pmgr, void *p, size_t old, size_t new)
-{
-    return PyMem_Realloc(p, new);
-}
-
-inline static void
-_pyfree(void *pmgr, void *p, size_t nbytes)
-{
-    PyMem_Free(p);
-}
+/*
+** Use picosat_init, which falls back to libc malloc/realloc/free.
+**
+** Do NOT hand PicoSAT allocators backed by PyMem_*. The solver allocates from
+** inside picosat_sat, which we call with the GIL released, and the PyMem_*
+** family requires the GIL.
+*/
 
 
 static bool
@@ -357,7 +346,7 @@ _satisfy_one(PyObject *self, PyObject *args, PyObject *kwargs)
         goto done;
     }
 
-    picosat = picosat_minit(NULL, _pymalloc, _pyrealloc, _pyfree);
+    picosat = picosat_init();
     if (picosat == NULL) {
         PyErr_SetString(Error, "could not initialize PicoSAT");
         goto done;
@@ -509,7 +498,7 @@ _satisfy_all_new(PyTypeObject *cls, PyObject *args, PyObject *kwargs)
         goto error;
     }
 
-    picosat = picosat_minit(NULL, _pymalloc, _pyrealloc, _pyfree);
+    picosat = picosat_init();
     if (picosat == NULL) {
         PyErr_SetString(Error, "could not initialize PicoSAT");
         goto error;
