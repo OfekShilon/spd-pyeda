@@ -1,91 +1,16 @@
 """
-PyEDA build/test/release stuff
+PyEDA C extension build config.
+
+All distribution metadata lives in pyproject.toml; this file only declares the
+things setuptools cannot express statically.
 """
 
 
 import sys
 from os.path import join as pjoin
 
-import pyeda
-
 from setuptools import setup, Extension
 
-
-NAME = pyeda.__name__
-
-VERSION = pyeda.__version__
-
-AUTHOR = "Chris Drake"
-
-AUTHOR_EMAIL = "cjdrake@gmail.com"
-
-DESCRIPTION = "Python Electronic Design Automation"
-
-KEYWORDS = [
-    "binary decision diagram",
-    "Boolean algebra",
-    "Boolean satisfiability",
-    "combinational logic",
-    "combinatorial logic",
-    "computer arithmetic",
-    "digital arithmetic",
-    "digital logic",
-    "EDA",
-    "electronic design automation",
-    "Espresso",
-    "Espresso-exact",
-    "Espresso-signature",
-    "logic",
-    "logic minimization",
-    "logic optimization",
-    "logic synthesis",
-    "math",
-    "mathematics",
-    "PicoSAT",
-    "SAT",
-    "satisfiability",
-    "truth table",
-    "Two-level logic minimization",
-    "Two-level logic optimization",
-]
-
-with open("README.rst", encoding="utf-8") as fin:
-    README = fin.read()
-
-with open("LICENSE", encoding="utf-8") as fin:
-    LICENSE = fin.read()
-
-URL = "https://github.com/cjdrake/pyeda"
-
-DOWNLOAD_URL = "https://pypi.python.org/packages/source/p/pyeda"
-
-CLASSIFIERS = [
-    "License :: OSI Approved :: BSD License",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Scientific/Engineering",
-    "Topic :: Scientific/Engineering :: Mathematics",
-]
-
-PYEDA_PKGS = [
-    "pyeda",
-    "pyeda.boolalg",
-    "pyeda.logic",
-    "pyeda.parsing",
-]
-
-TEST_PKGS = [
-    "pyeda.test",
-    "pyeda.boolalg.test",
-    "pyeda.logic.test",
-    "pyeda.parsing.test",
-]
-
-PACKAGES = PYEDA_PKGS + TEST_PKGS
 
 # Espresso extension
 ESPRESSO = dict(
@@ -164,9 +89,6 @@ EXPRNODE = dict(
 )
 
 # PicoSAT C extension
-with open(pjoin("thirdparty", "picosat", "VERSION"), encoding="utf-8") as fin:
-    PICOSAT_VERSION = '"' + fin.read().strip() + '"'
-
 PICOSAT = dict(
     define_macros=[
         ("NDEBUG", None),
@@ -181,6 +103,8 @@ PICOSAT = dict(
 )
 
 if sys.platform == "win32":
+    for _ext in (ESPRESSO, EXPRNODE, PICOSAT):
+        _ext["extra_compile_args"] = []
     PICOSAT["define_macros"] += [
         ("NGETRUSAGE", None),
         ("inline", "__inline"),
@@ -198,18 +122,6 @@ SCRIPTS = [
 ]
 
 setup(
-    name=NAME,
-    version=VERSION,
-    author=AUTHOR,
-    author_email=AUTHOR_EMAIL,
-    description=DESCRIPTION,
-    keywords=KEYWORDS,
-    long_description=README,
-    license=LICENSE,
-    url=URL,
-    download_url=DOWNLOAD_URL,
-    classifiers=CLASSIFIERS,
-    packages=PACKAGES,
     ext_modules=EXT_MODULES,
     scripts=SCRIPTS,
 )

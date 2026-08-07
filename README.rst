@@ -2,6 +2,19 @@
   Python Electronic Design Automation
 ***************************************
 
+.. note::
+
+   ``spd-pyeda`` is Speedata's fork of `PyEDA <https://github.com/cjdrake/pyeda>`_,
+   published because upstream is no longer maintained. It installs the same
+   ``pyeda`` import package, so it is a drop-in replacement — but for that reason
+   it cannot be installed alongside the original ``pyeda`` distribution.
+
+   Source: https://github.com/Speedata-io/pyeda
+
+The original README follows.
+
+--------------------
+
 Hello all,
 
 I have moved on from this project,

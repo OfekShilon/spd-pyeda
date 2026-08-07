@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spd-pyeda"
+dynamic = ["version"]
+description = "Python Electronic Design Automation (Speedata fork of pyeda)"
+readme = {file = "README.rst", content-type = "text/x-rst"}
+requires-python = ">=3.10"
+license = "BSD-2-Clause"
+license-files = ["LICENSE"]
+authors = [{name = "Chris Drake", email = "cjdrake@gmail.com"}]
+maintainers = [{name = "Ofek Shilon", email = "oshilon@speedata.io"}]
+keywords = [
+    "binary decision diagram",
+    "Boolean algebra",
+    "Boolean satisfiability",
+    "combinational logic",
+    "combinatorial logic",
+    "computer arithmetic",
+    "digital arithmetic",
+    "digital logic",
+    "EDA",
+    "electronic design automation",
+    "Espresso",
+    "Espresso-exact",
+    "Espresso-signature",
+    "logic",
+    "logic minimization",
+    "logic optimization",
+    "logic synthesis",
+    "math",
+    "mathematics",
+    "PicoSAT",
+    "SAT",
+    "satisfiability",
+    "truth table",
+    "Two-level logic minimization",
+    "Two-level logic optimization",
+]
+classifiers = [
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+
+[project.urls]
+Homepage = "https://github.com/Speedata-io/pyeda"
+Source = "https://github.com/Speedata-io/pyeda"
+Upstream = "https://github.com/cjdrake/pyeda"
+Documentation = "https://pyeda.readthedocs.io"
+
+[tool.setuptools]
+packages = [
+    "pyeda",
+    "pyeda.boolalg",
+    "pyeda.logic",
+    "pyeda.parsing",
+    "pyeda.test",
+    "pyeda.boolalg.test",
+    "pyeda.logic.test",
+    "pyeda.parsing.test",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "pyeda.__version__"}
+
+[tool.cibuildwheel]
+# PyPy has no support for the CPython C-API this package targets.
+skip = ["pp*", "*-musllinux_i686"]
+test-command = "python -c \"import pyeda.boolalg.espresso, pyeda.boolalg.exprnode, pyeda.boolalg.picosat\""
