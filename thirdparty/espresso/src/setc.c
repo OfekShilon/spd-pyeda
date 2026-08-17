@@ -449,6 +449,12 @@ descend(set **a, set **b)
     return 0;
 }
 
+int
+descend_cmp(const void *a, const void *b)
+{
+    return descend((set **) a, (set **) b);
+}
+
 // ascend -- comparison for ascending sort on set size
 
 int
