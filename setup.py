@@ -56,8 +56,7 @@ ESPRESSO = dict(
         pjoin("thirdparty", "espresso", "src", "unate.c"),
         pjoin("thirdparty", "espresso", "src", "verify.c"),
         pjoin("pyeda", "boolalg", "espressomodule.c"),
-    ],
-    extra_compile_args=["-Wno-incompatible-pointer-types"],
+    ]
 )
 
 # exprnode C extension

@@ -337,7 +337,8 @@ sf_sort(set_family_t *A, int (*compare)(set **, set **))
     *pdest = NULL;                  // Sentinel -- never seen by sort
 
     // Sort cubes by size
-    qsort((char *) A1, A->count, sizeof(set *), compare);
+    qsort((char *) A1, A->count, sizeof(set *),
+          (int (*)(const void *, const void *)) compare);
 
     return A1;
 }

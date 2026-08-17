@@ -348,7 +348,7 @@ simplify_cubelist(set **T)
     set_copy(CUBE.temp[0], T[0]); // retrieve cofactor
 
     ncubes = CUBELISTSIZE(T);
-    qsort((char *) (T+2), ncubes, sizeof(set *), d1_order);
+    qsort((char *) (T+2), ncubes, sizeof(set *), d1_order_cmp);
 
     Tdest = T+2;
     // *Tdest++ = T[2];

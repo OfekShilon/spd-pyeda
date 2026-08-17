@@ -139,7 +139,8 @@ mini_sort(set_family_t *F, int (*compare)(set **, set **))
     FREE(count);
 
     // use qsort to sort the array
-    qsort((char *) (F1 = sf_list(F)), F->count, sizeof(set *), compare);
+    qsort((char *) (F1 = sf_list(F)), F->count, sizeof(set *),
+          (int (*)(const void *, const void *)) compare);
     F_sorted = sf_unlist(F1, F->count, F->sf_size);
     sf_free(F);
 
@@ -166,7 +167,7 @@ sort_reduce(set_family_t *T)
     foreach_set(T, last, p)
         PUTSIZE(p, ((n - cdist(largest,p)) << 7) + MIN(set_ord(p),127));
 
-    qsort((char *) (T1 = sf_list(T)), T->count, sizeof(set *), descend);
+    qsort((char *) (T1 = sf_list(T)), T->count, sizeof(set *), descend_cmp);
     T_sorted = sf_unlist(T1, T->count, T->sf_size);
     sf_free(T);
 
