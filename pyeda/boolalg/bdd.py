@@ -64,6 +64,24 @@ BDDNODEZERO = _NODES[(-1, None, None)] = BDDNode(-1, None, None)
 BDDNODEONE = _NODES[(-2, None, None)] = BDDNode(-2, None, None)
 
 
+def reset_state():
+    """Reset the global BDDVariable registry.
+
+    See :func:`pyeda.boolalg.boolfunc.reset_state`; ``_VARS`` is keyed by
+    Variable uniqid, so this must be called together with it.
+
+    .. note::
+       ``_NODES`` and ``_BDDS`` are *not* cleared here. They are
+       ``WeakValueDictionary`` caches that already self-prune as BDD
+       nodes/diagrams are garbage collected, so they don't grow without
+       bound. Clearing them would also drop the ``BDDNODEZERO`` /
+       ``BDDNODEONE`` / ``BDDZERO`` / ``BDDONE`` terminal entries seeded
+       at import time, which would break the identity checks those
+       singletons rely on.
+    """
+    _VARS.clear()
+
+
 def bddvar(name, index=None):
     r"""Return a unique BDD variable.
 

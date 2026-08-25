@@ -40,6 +40,15 @@ _PC2STR = {
 }
 
 
+def reset_state():
+    """Reset the global TTVariable registry.
+
+    See :func:`pyeda.boolalg.boolfunc.reset_state`; ``_VARS`` is keyed by
+    Variable uniqid, so this must be called together with it.
+    """
+    _VARS.clear()
+
+
 def ttvar(name, index=None):
     """Return a TruthTable variable.
 
