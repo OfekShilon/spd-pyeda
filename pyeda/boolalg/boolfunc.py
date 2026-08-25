@@ -338,6 +338,22 @@ _UNIQIDS = {}
 _COUNT = 1
 
 
+def reset_state():
+    """Reset the global Variable name/uniqid registries.
+
+    .. warning::
+       Only call this once every :class:`Variable` from the previous
+       "run" (and anything wrapping one, e.g. an ``Expression``, BDD,
+       or truth table) has been discarded. Uniqids are recycled from 1,
+       so an object kept alive across the reset can collide with an
+       unrelated new object that happens to get the same uniqid.
+    """
+    global _COUNT
+    VARIABLES.clear()
+    _UNIQIDS.clear()
+    _COUNT = 1
+
+
 class Variable:
     r"""
     Base class for a symbolic Boolean variable.

@@ -122,6 +122,19 @@ _LITS = {}
 _ASSUMPTIONS = set()
 
 
+def reset_state():
+    """Reset the global Expression literal cache and assumption set.
+
+    See :func:`pyeda.boolalg.boolfunc.reset_state`; ``_LITS`` is keyed by
+    Variable uniqid, so this must be called together with it. This also
+    discards the ``exprnode`` C extension's own literal cache, which is
+    keyed the same way and would otherwise grow without bound.
+    """
+    _LITS.clear()
+    _ASSUMPTIONS.clear()
+    exprnode.reset()
+
+
 def _assume2point():
     """Convert global assumptions to a point."""
     point = {}

@@ -841,6 +841,33 @@ ExprNode_complete_sum(ExprNode *self)
 }
 
 
+/* exprnode.reset */
+PyDoc_STRVAR(reset_doc,
+    "\n\
+    Discard the module-level literal cache.\n\
+\n\
+    The ``lit`` function interns every literal ``ExprNode`` it creates,\n\
+    keyed by uniqid, in a vector that only ever grows. A long-running\n\
+    process that keeps allocating fresh uniqids (see\n\
+    ``pyeda.boolalg.boolfunc.reset_state``) will leak that vector's\n\
+    entries without bound unless this is called too.\n\
+    "
+);
+
+static PyObject *
+reset(PyObject *self, PyObject *args)
+{
+    BX_Vector_Del(lits);
+    lits = BX_Vector_New();
+    if (lits == NULL) {
+        PyErr_SetString(Error, "BX_Vector_New failed");
+        return NULL;
+    }
+
+    Py_RETURN_NONE;
+}
+
+
 /* exprnode.lit */
 PyDoc_STRVAR(lit_doc,
     "\n\
@@ -1277,6 +1304,7 @@ abstract syntax tree\n\
 );
 
 static PyMethodDef m_methods[] = {
+    {"reset", (PyCFunction) reset, METH_NOARGS,  reset_doc},
     {"lit",  (PyCFunction) lit,  METH_VARARGS, lit_doc},
     {"not_", (PyCFunction) not_, METH_VARARGS, not_doc},
     {"or_",  (PyCFunction) or_,  METH_VARARGS, or_doc},
