@@ -199,6 +199,30 @@ class TestToCNF:
         assert cnf.is_cnf()
         assert cnf.equivalent(f)
 
+    def test_large_cnf(self):
+        E0 = exprvar('E0')
+        E1 = exprvar('E1')
+        B0 = exprvar('B0')
+        B1 = exprvar('B1')
+        B3 = exprvar('B3')
+        S0 = exprvar('S0')
+        S1 = exprvar('S1')
+        S2 = exprvar('S2')
+        S3 = exprvar('S3')
+        S4 = exprvar('S4')
+
+        ex = Or(And(~E0, ~E1, S1, ~B1, B3), And(~E0, ~E1, ~B0, ~B1, B3), 
+            And(~E0, ~E1, ~S0, S3, S4), And(~E0, ~E1, ~B0, ~S2, S4), 
+            And(~E0, ~E1, ~B0, S3, S4), And(~E0, ~E1, ~S0, S3, B3), 
+            And(~E0, ~E1, S1, ~B1, S4), And(~E0, ~E1, ~B0, ~B1, S4), 
+            And(~E0, ~E1, ~B0, S3, B3), And(~E0, ~E1, ~S0, ~S2, B3), 
+            And(~E0, ~E1, ~S0, ~B1, B3), And(~E0, ~E1, ~S0, ~B1, S4), 
+            And(~E0, ~E1, S1, S3, B3), And(~E0, ~E1, ~S0, ~S2, S4), 
+            And(~E0, ~E1, S1, S3, S4), And(~E0, ~E1, S1, ~S2, B3), 
+            And(~E0, ~E1, S1, ~S2, S4), And(~E0, ~E1, ~B0, ~S2, B3))
+        cnf = ex.to_cnf()
+        assert cnf.is_cnf()
+        assert cnf.equivalent(ex)
 
 # ===========================================================================
 # DNF conversion tests
@@ -277,6 +301,36 @@ class TestToDNF:
         dnf = f.to_dnf()
         assert dnf.is_dnf()
         assert dnf.equivalent(f)
+
+    def test_large_dnf(self):
+        """AND-of-ORs mirror of TestToCNF.test_crash, targeting to_dnf's
+        cofactor-based fallback (the dual of to_cnf's) rather than to_cnf's.
+        """
+        E0 = exprvar('E0')
+        E1 = exprvar('E1')
+        B0 = exprvar('B0')
+        B1 = exprvar('B1')
+        B3 = exprvar('B3')
+        S0 = exprvar('S0')
+        S1 = exprvar('S1')
+        S2 = exprvar('S2')
+        S3 = exprvar('S3')
+        S4 = exprvar('S4')
+
+        ex = Or(And(~E0, ~E1, S1, ~B1, B3), And(~E0, ~E1, ~B0, ~B1, B3),
+            And(~E0, ~E1, ~S0, S3, S4), And(~E0, ~E1, ~B0, ~S2, S4),
+            And(~E0, ~E1, ~B0, S3, S4), And(~E0, ~E1, ~S0, S3, B3),
+            And(~E0, ~E1, S1, ~B1, S4), And(~E0, ~E1, ~B0, ~B1, S4),
+            And(~E0, ~E1, ~B0, S3, B3), And(~E0, ~E1, ~S0, ~S2, B3),
+            And(~E0, ~E1, ~S0, ~B1, B3), And(~E0, ~E1, ~S0, ~B1, S4),
+            And(~E0, ~E1, S1, S3, B3), And(~E0, ~E1, ~S0, ~S2, S4),
+            And(~E0, ~E1, S1, S3, S4), And(~E0, ~E1, S1, ~S2, B3),
+            And(~E0, ~E1, S1, ~S2, S4), And(~E0, ~E1, ~B0, ~S2, B3))
+        dual = ~ex  # De Morgan: AND of 18 5-literal OR-clauses, in NNF
+
+        dnf = dual.to_dnf()
+        assert dnf.is_dnf()
+        assert dnf.equivalent(dual)
 
 
 # ===========================================================================

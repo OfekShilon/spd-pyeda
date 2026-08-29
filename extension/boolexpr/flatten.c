@@ -8,6 +8,7 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 #include "boolexpr.h"
@@ -17,6 +18,26 @@
 
 
 #define DUAL(kind) (BX_OP_OR + BX_OP_AND - kind)
+
+
+/* Forward declarations: _distribute() recurses back into _to_dnf()/_to_cnf()
+** to convert the sub-expression left over after common-literal factoring,
+** and into _choose_var()/_cofactors() (defined further down, where they are
+** also used by _complete_sum()) for the cofactor-based fallback below. */
+static struct BoolExpr * _to_dnf(struct BoolExpr *nnf);
+static struct BoolExpr * _to_cnf(struct BoolExpr *nnf);
+static struct BoolExpr * _choose_var(struct BoolExpr *dnf);
+static bool _cofactors(struct BoolExpr **fv0, struct BoolExpr **fv1,
+                        struct BoolExpr *f, struct BoolExpr *v);
+
+
+/*
+** Distributing n branches of arity k is O(k^n). Beyond this many resulting
+** clauses, fall back to _distribute_by_cofactor(), which is bounded by the
+** number of *variables* instead -- much better when many branches share
+** structure built from relatively few variables.
+*/
+#define DISTRIBUTE_MAX_PRODUCT ((size_t) 1 << 16)
 
 
 static void
@@ -53,6 +74,273 @@ _nf2arrays(struct BoolExpr *nf)
 }
 
 
+/*
+** Return the literals common to every one of the n arrays.
+**
+** All input arrays must be sorted by literal uniqid (see _lits_cmp below),
+** which holds for every array _nf2arrays() produces. The result is sorted
+** the same way. Caller must BX_Array_Del() the result.
+*/
+static struct BX_Array *
+_common_lits(size_t n, struct BX_Array **arrays)
+{
+    struct BX_Array *common;
+
+    common = BX_Array_New(arrays[0]->length, arrays[0]->items);
+    if (common == NULL)
+        return NULL; // LCOV_EXCL_LINE
+
+    for (size_t k = 1; k < n && common->length > 0; ++k) {
+        struct BX_Array *xs = common;
+        struct BX_Array *ys = arrays[k];
+        struct BoolExpr **items;
+        size_t i = 0, j = 0, count = 0;
+
+        items = malloc(xs->length * sizeof(struct BoolExpr *));
+        if (items == NULL) {
+            BX_Array_Del(xs); // LCOV_EXCL_LINE
+            return NULL;      // LCOV_EXCL_LINE
+        }
+
+        while (i < xs->length && j < ys->length) {
+            struct BoolExpr *x = xs->items[i];
+            struct BoolExpr *y = ys->items[j];
+
+            if (x == y) {
+                items[count++] = x;
+                i += 1;
+                j += 1;
+            }
+            else {
+                long abs_x = labs(x->data.lit.uniqid);
+                long abs_y = labs(y->data.lit.uniqid);
+
+                if (abs_x <= abs_y)
+                    i += 1;
+                if (abs_y <= abs_x)
+                    j += 1;
+            }
+        }
+
+        common = _bx_array_from(count, items);
+        BX_Array_Del(xs);
+        if (common == NULL) {
+            free(items); // LCOV_EXCL_LINE
+            return NULL; // LCOV_EXCL_LINE
+        }
+    }
+
+    return common;
+}
+
+
+/*
+** Return a copy of xs with every literal in common removed.
+**
+** Both arrays must be sorted by literal uniqid, and common must be a
+** subset of xs (which is guaranteed when common came from _common_lits()
+** over an array list that includes xs). Caller must BX_Array_Del() the
+** result.
+*/
+static struct BX_Array *
+_subtract_lits(struct BX_Array *xs, struct BX_Array *common)
+{
+    struct BoolExpr **items;
+    struct BX_Array *result;
+    size_t j = 0, count = 0;
+
+    items = malloc(xs->length * sizeof(struct BoolExpr *));
+    if (items == NULL)
+        return NULL; // LCOV_EXCL_LINE
+
+    for (size_t i = 0; i < xs->length; ++i) {
+        struct BoolExpr *x = xs->items[i];
+
+        while (j < common->length &&
+               labs(common->items[j]->data.lit.uniqid) < labs(x->data.lit.uniqid))
+            j += 1;
+
+        if (!(j < common->length && common->items[j] == x))
+            items[count++] = x;
+    }
+
+    result = _bx_array_from(count, items);
+    if (result == NULL) {
+        free(items); // LCOV_EXCL_LINE
+        return NULL; // LCOV_EXCL_LINE
+    }
+
+    return result;
+}
+
+
+/*
+** Return `lit OP nf`, where OP is | if combinator == BX_OP_OR, else &,
+** and nf is a constant, literal, single term/clause, or (like the output
+** of _to_cnf()/_to_dnf()) an op-of-terms/clauses matching combinator (an
+** AND-of-OR-clauses for combinator == BX_OP_OR, i.e. a CNF; an OR-of-AND-
+** terms for combinator == BX_OP_AND, i.e. a DNF).
+**
+** This is linear in the size of nf: it folds lit into each existing
+** term/clause instead of computing a full distribution, so it never blows
+** up the way _distribute() can.
+*/
+static struct BoolExpr *
+_lit_into(BX_Kind combinator, struct BoolExpr *lit, struct BoolExpr *nf)
+{
+    struct BoolExpr *absorbing = (combinator == BX_OP_OR) ? &BX_One : &BX_Zero;
+    struct BoolExpr *neutral = (combinator == BX_OP_OR) ? &BX_Zero : &BX_One;
+    struct BoolExpr *temp;
+    struct BoolExpr *y;
+
+    if (nf == absorbing)
+        return BX_IncRef(absorbing);
+
+    if (nf == neutral)
+        return BX_IncRef(lit);
+
+    if (BX_IS_LIT(nf) || _bx_is_clause(nf)) {
+        size_t n = BX_IS_LIT(nf) ? 1 : nf->data.xs->length;
+        struct BoolExpr **xs;
+
+        xs = malloc((n + 1) * sizeof(struct BoolExpr *));
+        if (xs == NULL)
+            return NULL; // LCOV_EXCL_LINE
+
+        xs[0] = lit;
+        if (BX_IS_LIT(nf))
+            xs[1] = nf;
+        else {
+            for (size_t i = 0; i < n; ++i)
+                xs[i + 1] = nf->data.xs->items[i];
+        }
+
+        temp = _bx_orandxor_new(combinator, n + 1, xs);
+        free(xs);
+        if (temp == NULL)
+            return NULL; // LCOV_EXCL_LINE
+
+        CHECK_NULL_1(y, _bx_simplify(temp), temp);
+        BX_DecRef(temp);
+        return y;
+    }
+
+    /* nf is a DUAL(combinator)-of-terms: fold lit into every term individually */
+    {
+        size_t n = nf->data.xs->length;
+        struct BoolExpr **terms;
+
+        terms = malloc(n * sizeof(struct BoolExpr *));
+        if (terms == NULL)
+            return NULL; // LCOV_EXCL_LINE
+
+        for (size_t i = 0; i < n; ++i)
+            CHECK_NULL_N(terms[i], _lit_into(combinator, lit, nf->data.xs->items[i]), i, terms);
+
+        temp = _bx_orandxor_new(DUAL(combinator), n, terms);
+        _bx_free_exprs(n, terms);
+        if (temp == NULL)
+            return NULL; // LCOV_EXCL_LINE
+
+        CHECK_NULL_1(y, _bx_simplify(temp), temp);
+        BX_DecRef(temp);
+        return y;
+    }
+}
+
+
+/*
+** Convert nf (kind == outer_kind, e.g. an OR of AND-clauses for the CNF
+** case) to normal form via Shannon cofactor decomposition, instead of
+** _distribute()'s full product. Distribution is exponential in the number
+** of branches; this is instead bounded by the number of *variables* --
+** much better when a formula has many branches built from few variables:
+**
+**     CNF: f == (~v | to_cnf(f|v=1)) & (v | to_cnf(f|v=0))
+**     DNF: f == ( v & to_dnf(f|v=1)) | (~v & to_dnf(f|v=0))
+**
+** Note the DNF case is not simply the CNF case with & and | swapped: the
+** literal that pairs with the v=1 cofactor is v itself there (not ~v).
+*/
+static struct BoolExpr *
+_distribute_by_cofactor(BX_Kind kind, struct BoolExpr *nf)
+{
+    struct BoolExpr *v, *nv;
+    struct BoolExpr *fv0, *fv1;
+    struct BoolExpr *r0, *r1;
+    struct BoolExpr *left, *right;
+    struct BoolExpr *pair[2];
+    struct BoolExpr *temp;
+    struct BoolExpr *y;
+
+    CHECK_NULL(v, _choose_var(nf));
+
+    if (!_cofactors(&fv0, &fv1, nf, v)) {
+        BX_DecRef(v); // LCOV_EXCL_LINE
+        return NULL;  // LCOV_EXCL_LINE
+    }
+
+    r0 = (kind == BX_OP_OR) ? _to_cnf(fv0) : _to_dnf(fv0);
+    BX_DecRef(fv0);
+    if (r0 == NULL) {
+        BX_DecRef(v);   // LCOV_EXCL_LINE
+        BX_DecRef(fv1); // LCOV_EXCL_LINE
+        return NULL;    // LCOV_EXCL_LINE
+    }
+
+    r1 = (kind == BX_OP_OR) ? _to_cnf(fv1) : _to_dnf(fv1);
+    BX_DecRef(fv1);
+    if (r1 == NULL) {
+        BX_DecRef(v);  // LCOV_EXCL_LINE
+        BX_DecRef(r0); // LCOV_EXCL_LINE
+        return NULL;   // LCOV_EXCL_LINE
+    }
+
+    nv = BX_Not(v);
+    if (nv == NULL) {
+        BX_DecRef(v);  // LCOV_EXCL_LINE
+        BX_DecRef(r0); // LCOV_EXCL_LINE
+        BX_DecRef(r1); // LCOV_EXCL_LINE
+        return NULL;   // LCOV_EXCL_LINE
+    }
+
+    /* _lit_into()'s combinator is always the outer kind: OR to fold a
+    ** literal into a CNF's clauses, AND to fold one into a DNF's terms. */
+    if (kind == BX_OP_OR) {
+        left = _lit_into(kind, nv, r1);
+        right = (left == NULL) ? NULL : _lit_into(kind, v, r0);
+    }
+    else {
+        left = _lit_into(kind, v, r1);
+        right = (left == NULL) ? NULL : _lit_into(kind, nv, r0);
+    }
+
+    BX_DecRef(v);
+    BX_DecRef(nv);
+    BX_DecRef(r0);
+    BX_DecRef(r1);
+
+    if (left == NULL || right == NULL) {
+        if (left != NULL)  BX_DecRef(left);  // LCOV_EXCL_LINE
+        if (right != NULL) BX_DecRef(right); // LCOV_EXCL_LINE
+        return NULL;                         // LCOV_EXCL_LINE
+    }
+
+    pair[0] = left;
+    pair[1] = right;
+    temp = _bx_orandxor_new(DUAL(kind), 2, pair);
+    BX_DecRef(left);
+    BX_DecRef(right);
+    if (temp == NULL)
+        return NULL; // LCOV_EXCL_LINE
+
+    CHECK_NULL_1(y, _bx_simplify(temp), temp);
+    BX_DecRef(temp);
+
+    return y;
+}
+
+
 /* NOTE: Return size is exponential */
 static struct BoolExpr *
 _distribute(BX_Kind kind, struct BoolExpr *nf)
@@ -68,6 +356,149 @@ _distribute(BX_Kind kind, struct BoolExpr *nf)
     arrays = _nf2arrays(nf);
     if (arrays == NULL)
         return NULL; // LCOV_EXCL_LINE
+
+    /*
+    ** Factor out literals common to every branch before distributing:
+    **
+    **     (L & a) | (L & b) | (L & c) == L & (a | b | c)
+    **
+    ** Plain distribution is exponential in the branch count. When branches
+    ** share literals (e.g. many clauses of a DNF sharing a few conditions),
+    ** pulling the shared part out first can shrink the remaining product
+    ** dramatically, or eliminate it entirely.
+    */
+    {
+        struct BX_Array *common;
+
+        CHECK_NULL(common, _common_lits(length, arrays));
+
+        if (common->length > 0) {
+            struct BoolExpr **reduced;
+            struct BoolExpr *rnf;
+            struct BoolExpr *rest;
+            struct BoolExpr **final_xs;
+            size_t fcount;
+
+            reduced = malloc(length * sizeof(struct BoolExpr *));
+            if (reduced == NULL) {
+                BX_Array_Del(common);          // LCOV_EXCL_LINE
+                _free_arrays(length, arrays);  // LCOV_EXCL_LINE
+                return NULL;                   // LCOV_EXCL_LINE
+            }
+
+            for (size_t i = 0; i < length; ++i) {
+                struct BX_Array *sub;
+
+                sub = _subtract_lits(arrays[i], common);
+                if (sub == NULL) {
+                    for (size_t k = 0; k < i; ++k) // LCOV_EXCL_LINE
+                        BX_DecRef(reduced[k]);     // LCOV_EXCL_LINE
+                    free(reduced);                 // LCOV_EXCL_LINE
+                    BX_Array_Del(common);          // LCOV_EXCL_LINE
+                    _free_arrays(length, arrays);  // LCOV_EXCL_LINE
+                    return NULL;                   // LCOV_EXCL_LINE
+                }
+
+                if (sub->length == 0)
+                    reduced[i] = BX_IncRef(_bx_identity[DUAL(kind)]);
+                else if (sub->length == 1)
+                    reduced[i] = BX_IncRef(sub->items[0]);
+                else
+                    reduced[i] = _bx_orandxor_new(DUAL(kind), sub->length, sub->items);
+
+                BX_Array_Del(sub);
+
+                if (reduced[i] == NULL) {
+                    for (size_t k = 0; k < i; ++k) // LCOV_EXCL_LINE
+                        BX_DecRef(reduced[k]);     // LCOV_EXCL_LINE
+                    free(reduced);                 // LCOV_EXCL_LINE
+                    BX_Array_Del(common);          // LCOV_EXCL_LINE
+                    _free_arrays(length, arrays);  // LCOV_EXCL_LINE
+                    return NULL;                   // LCOV_EXCL_LINE
+                }
+            }
+
+            _free_arrays(length, arrays);
+
+            temp = _bx_orandxor_new(kind, length, reduced);
+            _bx_free_exprs(length, reduced);
+            if (temp == NULL) {
+                BX_Array_Del(common); // LCOV_EXCL_LINE
+                return NULL;          // LCOV_EXCL_LINE
+            }
+
+            CHECK_NULL_1(rnf, _bx_simplify(temp), temp);
+            BX_DecRef(temp);
+
+            if (BX_IS_ATOM(rnf) || _bx_is_clause(rnf)) {
+                rest = rnf;
+            }
+            else {
+                temp = rnf;
+                rest = (kind == BX_OP_OR) ? _to_cnf(temp) : _to_dnf(temp);
+                BX_DecRef(temp);
+                if (rest == NULL) {
+                    BX_Array_Del(common); // LCOV_EXCL_LINE
+                    return NULL;          // LCOV_EXCL_LINE
+                }
+            }
+
+            fcount = common->length + 1;
+            final_xs = malloc(fcount * sizeof(struct BoolExpr *));
+            if (final_xs == NULL) {
+                BX_DecRef(rest);      // LCOV_EXCL_LINE
+                BX_Array_Del(common); // LCOV_EXCL_LINE
+                return NULL;          // LCOV_EXCL_LINE
+            }
+            for (size_t i = 0; i < common->length; ++i)
+                final_xs[i] = common->items[i];
+            final_xs[common->length] = rest;
+
+            temp = _bx_orandxor_new(DUAL(kind), fcount, final_xs);
+            free(final_xs);
+            BX_DecRef(rest);
+            BX_Array_Del(common);
+            if (temp == NULL)
+                return NULL; // LCOV_EXCL_LINE
+
+            CHECK_NULL_1(y, _bx_simplify(temp), temp);
+            BX_DecRef(temp);
+
+            return y;
+        }
+
+        BX_Array_Del(common);
+    }
+
+    /*
+    ** No factorable common literal: estimate the size of the full product
+    ** before committing to it, and fall back to the cofactor-based
+    ** decomposition above if it would be too large.
+    */
+    {
+        size_t total = 1;
+        bool too_large = false;
+
+        for (size_t i = 0; i < length; ++i) {
+            size_t alen = arrays[i]->length;
+
+            if (alen != 0 && total > DISTRIBUTE_MAX_PRODUCT / alen) {
+                too_large = true;
+                break;
+            }
+            total *= alen;
+            if (total > DISTRIBUTE_MAX_PRODUCT) {
+                too_large = true;
+                break;
+            }
+        }
+
+        if (too_large) {
+            y = _distribute_by_cofactor(kind, nf);
+            _free_arrays(length, arrays);
+            return y;
+        }
+    }
 
     product = BX_Product(kind, length, arrays);
     if (product == NULL) {
