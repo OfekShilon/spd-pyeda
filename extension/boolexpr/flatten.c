@@ -75,59 +75,55 @@ _nf2arrays(struct BoolExpr *nf)
 
 
 /*
-** Return the literals common to every one of the n arrays.
+** Return the items common to every one of the n arrays.
 **
-** All input arrays must be sorted by literal uniqid (see _lits_cmp below),
-** which holds for every array _nf2arrays() produces. The result is sorted
-** the same way. Caller must BX_Array_Del() the result.
+** Commonality is exact identity (x == y): pyeda interns/shares structurally
+** identical sub-expressions, so this catches both a literal shared by every
+** branch and a larger shared sub-expression. An array element need not be a
+** literal -- _nf2arrays() puts a branch's own children in the array, and a
+** branch can be a multi-clause normal form (e.g. an AND of several OR-
+** clauses) instead of a single literal or clause, whenever it doesn't
+** collapse into the outer nf by same-kind flattening. So this deliberately
+** does not use any per-element field like a literal's uniqid (reading that
+** off a non-literal element would be type-punning garbage) or assume any
+** sort order; arrays here are small (branch arity), so a plain quadratic
+** scan is cheap. Caller must BX_Array_Del() the result.
 */
 static struct BX_Array *
 _common_lits(size_t n, struct BX_Array **arrays)
 {
     struct BX_Array *common;
+    struct BoolExpr **items;
+    size_t count = 0;
 
-    common = BX_Array_New(arrays[0]->length, arrays[0]->items);
-    if (common == NULL)
+    items = malloc(arrays[0]->length * sizeof(struct BoolExpr *));
+    if (items == NULL)
         return NULL; // LCOV_EXCL_LINE
 
-    for (size_t k = 1; k < n && common->length > 0; ++k) {
-        struct BX_Array *xs = common;
-        struct BX_Array *ys = arrays[k];
-        struct BoolExpr **items;
-        size_t i = 0, j = 0, count = 0;
+    for (size_t i = 0; i < arrays[0]->length; ++i) {
+        struct BoolExpr *x = arrays[0]->items[i];
+        bool in_all = true;
 
-        items = malloc(xs->length * sizeof(struct BoolExpr *));
-        if (items == NULL) {
-            BX_Array_Del(xs); // LCOV_EXCL_LINE
-            return NULL;      // LCOV_EXCL_LINE
-        }
+        for (size_t k = 1; k < n && in_all; ++k) {
+            bool found = false;
 
-        while (i < xs->length && j < ys->length) {
-            struct BoolExpr *x = xs->items[i];
-            struct BoolExpr *y = ys->items[j];
-
-            if (x == y) {
-                items[count++] = x;
-                i += 1;
-                j += 1;
+            for (size_t j = 0; j < arrays[k]->length; ++j) {
+                if (arrays[k]->items[j] == x) {
+                    found = true;
+                    break;
+                }
             }
-            else {
-                long abs_x = labs(x->data.lit.uniqid);
-                long abs_y = labs(y->data.lit.uniqid);
-
-                if (abs_x <= abs_y)
-                    i += 1;
-                if (abs_y <= abs_x)
-                    j += 1;
-            }
+            in_all = found;
         }
 
-        common = _bx_array_from(count, items);
-        BX_Array_Del(xs);
-        if (common == NULL) {
-            free(items); // LCOV_EXCL_LINE
-            return NULL; // LCOV_EXCL_LINE
-        }
+        if (in_all)
+            items[count++] = x;
+    }
+
+    common = _bx_array_from(count, items);
+    if (common == NULL) {
+        free(items); // LCOV_EXCL_LINE
+        return NULL; // LCOV_EXCL_LINE
     }
 
     return common;
@@ -135,19 +131,17 @@ _common_lits(size_t n, struct BX_Array **arrays)
 
 
 /*
-** Return a copy of xs with every literal in common removed.
-**
-** Both arrays must be sorted by literal uniqid, and common must be a
-** subset of xs (which is guaranteed when common came from _common_lits()
-** over an array list that includes xs). Caller must BX_Array_Del() the
-** result.
+** Return a copy of xs with every item in common removed (by identity, see
+** _common_lits() above). common must be a subset of xs, which is guaranteed
+** when common came from _common_lits() over an array list that includes xs.
+** Caller must BX_Array_Del() the result.
 */
 static struct BX_Array *
 _subtract_lits(struct BX_Array *xs, struct BX_Array *common)
 {
     struct BoolExpr **items;
     struct BX_Array *result;
-    size_t j = 0, count = 0;
+    size_t count = 0;
 
     items = malloc(xs->length * sizeof(struct BoolExpr *));
     if (items == NULL)
@@ -155,12 +149,16 @@ _subtract_lits(struct BX_Array *xs, struct BX_Array *common)
 
     for (size_t i = 0; i < xs->length; ++i) {
         struct BoolExpr *x = xs->items[i];
+        bool in_common = false;
 
-        while (j < common->length &&
-               labs(common->items[j]->data.lit.uniqid) < labs(x->data.lit.uniqid))
-            j += 1;
+        for (size_t j = 0; j < common->length; ++j) {
+            if (common->items[j] == x) {
+                in_common = true;
+                break;
+            }
+        }
 
-        if (!(j < common->length && common->items[j] == x))
+        if (!in_common)
             items[count++] = x;
     }
 
@@ -199,7 +197,16 @@ _lit_into(BX_Kind combinator, struct BoolExpr *lit, struct BoolExpr *nf)
     if (nf == neutral)
         return BX_IncRef(lit);
 
-    if (BX_IS_LIT(nf) || _bx_is_clause(nf)) {
+    /* nf counts as "a single clause to fold lit into directly" only when its
+    ** own kind matches combinator (e.g. an OR-clause when combinator == OR).
+    ** _bx_is_clause() alone isn't enough: it only checks that nf's children
+    ** are literals, regardless of nf's kind, so e.g. And(~a, b) -- a 2-clause
+    ** CNF whose clauses happen to be bare literals -- would wrongly satisfy
+    ** it too (its kind is AND, not OR). Folding lit into that as if it were
+    ** one OR-clause (Or(lit, ~a, b)) is a different, wrong function from the
+    ** correct distribution (Or(lit,~a) & Or(lit,b)); the kind check below
+    ** routes it to the "fold into every term" case instead. */
+    if (BX_IS_LIT(nf) || (nf->kind == combinator && _bx_is_clause(nf))) {
         size_t n = BX_IS_LIT(nf) ? 1 : nf->data.xs->length;
         struct BoolExpr **xs;
 
@@ -227,7 +234,15 @@ _lit_into(BX_Kind combinator, struct BoolExpr *lit, struct BoolExpr *nf)
 
     /* nf is a DUAL(combinator)-of-terms: fold lit into every term individually */
     {
-        size_t n = nf->data.xs->length;
+        size_t n;
+
+        /* Everything else was handled above, so nf must be an op of the dual
+        ** kind here. Were it a combinator-kinded op that isn't a clause, the
+        ** code below would rebuild it as its own dual -- the same class of
+        ** mistake as folding an And() into an Or-clause. */
+        assert(BX_IS_OP(nf) && nf->kind == DUAL(combinator));
+
+        n = nf->data.xs->length;
         struct BoolExpr **terms;
 
         terms = malloc(n * sizeof(struct BoolExpr *));
@@ -781,9 +796,19 @@ BX_ToCNF(struct BoolExpr *ex)
 static struct BoolExpr *
 _choose_var(struct BoolExpr *dnf)
 {
-    struct BoolExpr *lit = BX_IS_LIT(dnf->data.xs->items[0])
-                         ? dnf->data.xs->items[0]
-                         : dnf->data.xs->items[0]->data.xs->items[0];
+    /* dnf's first branch need not be a plain literal or clause -- it can be
+    ** a multi-clause normal form itself (see _common_lits() above), so
+    ** descend until an actual literal is reached. */
+    struct BoolExpr *lit = dnf->data.xs->items[0];
+
+    while (!BX_IS_LIT(lit)) {
+        /* Only an operator has data.xs; a constant here would mean reading
+        ** it out of the union member holding pcval. Simplified normal forms
+        ** don't carry constant children, so this documents the invariant
+        ** rather than handling a reachable case. */
+        assert(BX_IS_OP(lit) && lit->data.xs->length > 0);
+        lit = lit->data.xs->items[0];
+    }
 
     if (BX_IS_COMP(lit))
         return BX_Not(lit);
