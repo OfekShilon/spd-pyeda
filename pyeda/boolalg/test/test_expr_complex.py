@@ -224,6 +224,29 @@ class TestToCNF:
         assert cnf.is_cnf()
         assert cnf.equivalent(ex)
 
+    def test_cofactor_fallback_and_of_literals_branch(self):
+        # Regression test for a bug in the cofactor-based distribution
+        # fallback (only reached once a branch count/arity crosses
+        # DISTRIBUTE_MAX_PRODUCT, hence the size of this expression): a
+        # cofactor could collapse to something like And(~a, b), a 2-clause
+        # CNF whose clauses happen to be bare literals. _lit_into() mistook
+        # that for a single OR-clause (matching by "all children are
+        # literals" alone, ignoring the node's own AND kind) and folded a
+        # literal into it directly instead of distributing across its two
+        # clauses, silently dropping a needed clause from the result.
+        ex = Or(
+            And(V[3], ~V[6], ~V[8], Or(And(~V[3], ~V[4], V[6], Or(And(~V[1], V[7]), And(~V[2], ~V[3], ~V[5]), And(V[3], ~V[5], ~V[9]))), And(~V[0], ~V[2], V[4], ~V[8], Or(V[2], V[6], And(V[5], V[7], V[8]))), And(~V[0], V[2], V[4], Or(~V[4], And(~V[1], V[3]), And(~V[0], ~V[5]))), And(V[0], V[1], V[3], V[9], Or(And(~V[4], V[6], V[8]), And(~V[4], ~V[8], V[9]))), And(V[0], ~V[4], V[5], ~V[8]))),
+            And(V[0], ~V[1], V[9], Or(And(V[3], V[4], ~V[5], V[6], Or(V[3], And(V[6], V[7], ~V[9]), And(~V[5], ~V[6], ~V[9]))), And(V[3], ~V[9], Or(And(V[3], ~V[6], ~V[8]), And(~V[3], V[4], ~V[5]))), And(~V[2], ~V[3], ~V[4], Or(And(~V[1], ~V[4]), And(V[0], ~V[1], V[3]), And(V[3], ~V[8]))), And(V[2], ~V[8], Or(V[1], V[2])), And(~V[2], ~V[3], V[6], V[8]), And(V[6], ~V[7], ~V[8], Or(And(V[0], ~V[3], ~V[8]), And(~V[1], V[3], V[4]))), And(~V[4], V[6], Or(~V[5], And(V[2], ~V[4], ~V[9]))))),
+            And(~V[0], V[7], ~V[8], Or(And(V[1], ~V[2], ~V[3], V[4], ~V[6], ~V[8], V[9]), And(~V[1], V[2], ~V[3], V[4], ~V[8], ~V[9]))),
+            And(V[4], ~V[7], ~V[8], Or(And(V[0], V[1], ~V[4], V[5], V[7]), And(V[2], V[3], V[5], V[6], V[8]), And(V[2], V[5], ~V[6], Or(V[3], And(V[1], V[4]), And(~V[2], ~V[4], ~V[9]))), And(V[0], V[1], ~V[5], V[6], ~V[7], ~V[8]))),
+            And(V[6], V[7], Or(And(~V[4], ~V[6], ~V[7], Or(~V[8], And(~V[0], ~V[4], V[5]), And(V[8], ~V[9]))), And(V[1], ~V[2], ~V[4], V[6], Or(And(~V[4], ~V[6], V[7]), And(~V[0], ~V[8]), And(~V[4], V[6], ~V[7]))), And(V[2], ~V[4], ~V[9], Or(V[3], And(V[2], ~V[5], ~V[8]))), And(~V[3], V[4], Or(And(~V[0], ~V[2], ~V[4]), And(~V[5], V[6], ~V[7]))), And(V[0], ~V[9], Or(And(V[5], ~V[8], V[9]), And(V[1], ~V[4], V[7]))), And(~V[1], V[3], ~V[4], Or(V[2], And(~V[3], V[6], V[7]), And(~V[1], V[2], V[9]))), And(~V[2], V[3], ~V[4], ~V[6]))),
+            And(~V[2], ~V[5], ~V[7], Or(And(V[0], ~V[2], V[6], V[7], Or(V[0], And(~V[0], V[6], ~V[7]))), And(V[2], V[7], Or(V[1], And(~V[1], V[7], V[9]), And(V[2], ~V[3], V[6]))), And(V[0], ~V[3], Or(V[0], And(V[0], V[3], V[4]))), And(~V[4], V[7], ~V[8], ~V[9], Or(V[1], V[2], And(V[8], V[9]))), And(V[0], V[2], V[5], V[8], Or(And(~V[0], ~V[3], V[5]), And(V[0], ~V[5], ~V[7]))))),
+            And(~V[2], V[6], Or(And(V[0], V[1], V[2], V[4], V[9]), And(~V[4], V[6], Or(~V[3], And(V[1], V[8], ~V[9]), And(~V[0], V[3], ~V[6]))), And(V[5], V[6], ~V[8], Or(V[7], And(~V[1], V[2], ~V[3]))), And(~V[0], ~V[2], V[3], ~V[5]), And(V[0], V[2], ~V[7], ~V[8], Or(V[0], V[4], And(V[1], ~V[7], V[8]))))),
+        )
+        cnf = ex.to_cnf()
+        assert cnf.is_cnf()
+        assert cnf.equivalent(ex)
+
 # ===========================================================================
 # DNF conversion tests
 # ===========================================================================
