@@ -1,0 +1,67 @@
+name: Test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.build }} build, Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.13"]
+        build: [release, asserts]
+        include:
+          # What ships.
+          - build: release
+            cflags: ""
+            verify: ""
+          # The diagnostic configuration, with both of the checks that are off
+          # in a normal build turned on. The extension ships with -DNDEBUG, so
+          # every assert() in extension/boolexpr is absent from every wheel;
+          # -U NDEBUG keeps them. PYEDA_VERIFY_EQUIV then checks each
+          # normal-form conversion against its input. Between them they catch
+          # the failure this suite otherwise cannot see: a to_cnf() result that
+          # is well-formed, does not crash, and is not the same function.
+          - build: asserts
+            cflags: "-U NDEBUG"
+            verify: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install dependencies
+        # setuptools is explicit: Python no longer preinstalls it, and the
+        # build below invokes setup.py directly. That is deliberate -- it is
+        # the only way to get -U NDEBUG onto the compiler line *after*
+        # setup.py's own -DNDEBUG, which is what makes the asserts build real.
+        run: python -m pip install --upgrade pip setuptools pytest
+
+      - name: Build extension in place
+        run: |
+          set -eo pipefail
+          python setup.py build_ext --inplace --force ${{ matrix.cflags }} 2>&1 | tee build.log
+          if [ -n "${{ matrix.cflags }}" ]; then
+            # setup.py appends a -DNDEBUG of its own, so -U NDEBUG disables
+            # asserts only by landing after it on the command line. Passing the
+            # flag via CFLAGS puts it first, where it is silently ignored --
+            # check the compiler line rather than trusting the flag took.
+            grep -q -- '-DNDEBUG.*-UNDEBUG' build.log || {
+              echo "::error::-UNDEBUG did not follow -DNDEBUG; asserts are still compiled out"
+              exit 1
+            }
+          fi
+
+      - name: Run tests
+        env:
+          # Empty on the release build, which reads as off -- see
+          # _VERIFY_EQUIV_OFF in pyeda/boolalg/expr.py.
+          PYEDA_VERIFY_EQUIV: ${{ matrix.verify }}
+        run: pytest --doctest-modules --ignore=doc
