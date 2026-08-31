@@ -21,7 +21,7 @@
 
 
 /* Forward declarations: _distribute() recurses back into _to_dnf()/_to_cnf()
-** to convert the sub-expression left over after common-literal factoring,
+** to convert the sub-expression left over after common-factor extraction,
 ** and into _choose_var()/_cofactors() (defined further down, where they are
 ** also used by _complete_sum()) for the cofactor-based fallback below. */
 static struct BoolExpr * _to_dnf(struct BoolExpr *nnf);
@@ -90,7 +90,7 @@ _nf2arrays(struct BoolExpr *nf)
 ** scan is cheap. Caller must BX_Array_Del() the result.
 */
 static struct BX_Array *
-_common_lits(size_t n, struct BX_Array **arrays)
+_common_items(size_t n, struct BX_Array **arrays)
 {
     struct BX_Array *common;
     struct BoolExpr **items;
@@ -132,12 +132,12 @@ _common_lits(size_t n, struct BX_Array **arrays)
 
 /*
 ** Return a copy of xs with every item in common removed (by identity, see
-** _common_lits() above). common must be a subset of xs, which is guaranteed
-** when common came from _common_lits() over an array list that includes xs.
+** _common_items() above). common must be a subset of xs, which is guaranteed
+** when common came from _common_items() over an array list that includes xs.
 ** Caller must BX_Array_Del() the result.
 */
 static struct BX_Array *
-_subtract_lits(struct BX_Array *xs, struct BX_Array *common)
+_subtract_items(struct BX_Array *xs, struct BX_Array *common)
 {
     struct BoolExpr **items;
     struct BX_Array *result;
@@ -373,19 +373,21 @@ _distribute(BX_Kind kind, struct BoolExpr *nf)
         return NULL; // LCOV_EXCL_LINE
 
     /*
-    ** Factor out literals common to every branch before distributing:
+    ** Factor out the sub-expressions common to every branch before
+    ** distributing:
     **
     **     (L & a) | (L & b) | (L & c) == L & (a | b | c)
     **
-    ** Plain distribution is exponential in the branch count. When branches
-    ** share literals (e.g. many clauses of a DNF sharing a few conditions),
-    ** pulling the shared part out first can shrink the remaining product
-    ** dramatically, or eliminate it entirely.
+    ** L is usually a literal, but the identity holds for any shared factor
+    ** (see _common_items()). Plain distribution is exponential in the branch
+    ** count. When branches share structure (e.g. many clauses of a DNF
+    ** sharing a few conditions), pulling the shared part out first can shrink
+    ** the remaining product dramatically, or eliminate it entirely.
     */
     {
         struct BX_Array *common;
 
-        CHECK_NULL(common, _common_lits(length, arrays));
+        CHECK_NULL(common, _common_items(length, arrays));
 
         if (common->length > 0) {
             struct BoolExpr **reduced;
@@ -404,7 +406,7 @@ _distribute(BX_Kind kind, struct BoolExpr *nf)
             for (size_t i = 0; i < length; ++i) {
                 struct BX_Array *sub;
 
-                sub = _subtract_lits(arrays[i], common);
+                sub = _subtract_items(arrays[i], common);
                 if (sub == NULL) {
                     for (size_t k = 0; k < i; ++k) // LCOV_EXCL_LINE
                         BX_DecRef(reduced[k]);     // LCOV_EXCL_LINE
@@ -486,7 +488,7 @@ _distribute(BX_Kind kind, struct BoolExpr *nf)
     }
 
     /*
-    ** No factorable common literal: estimate the size of the full product
+    ** Nothing common to factor out: estimate the size of the full product
     ** before committing to it, and fall back to the cofactor-based
     ** decomposition above if it would be too large.
     */
@@ -797,7 +799,7 @@ static struct BoolExpr *
 _choose_var(struct BoolExpr *dnf)
 {
     /* dnf's first branch need not be a plain literal or clause -- it can be
-    ** a multi-clause normal form itself (see _common_lits() above), so
+    ** a multi-clause normal form itself (see _common_items() above), so
     ** descend until an actual literal is reached. */
     struct BoolExpr *lit = dnf->data.xs->items[0];
 
