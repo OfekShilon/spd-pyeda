@@ -40,12 +40,42 @@ static bool _cofactors(struct BoolExpr **fv0, struct BoolExpr **fv1,
 #define DISTRIBUTE_MAX_PRODUCT ((size_t) 1 << 16)
 
 
+/*
+** Below this much scan work -- |arrays[0]| times the total length of the
+** other arrays -- the plain nested scan in _common_items() beats indexing
+** the other arrays: BX_Set_New() allocates a table and every insert mallocs
+** an item, which loses badly on the short arrays that dominate recursive
+** _distribute() calls. Above it, the quadratic term takes over and the sets
+** pay for themselves many times over.
+*/
+#define COMMON_SCAN_MAX_WORK ((size_t) 1 << 12)
+
+
 static void
 _free_arrays(size_t n, struct BX_Array **arrays)
 {
     for (size_t i = 0; i < n; ++i)
         BX_Array_Del(arrays[i]);
     free(arrays);
+}
+
+
+/* Free sets[1..n-1]; see _common_items() for why index 0 is unused. */
+static void
+_free_sets(size_t n, struct BX_Set **sets)
+{
+    for (size_t k = 1; k < n; ++k)
+        BX_Set_Del(sets[k]);
+    free(sets);
+}
+
+
+/* BX_Set_Del(), tolerating the NULL that means "no index was built". */
+static void
+_free_set(struct BX_Set *set)
+{
+    if (set != NULL)
+        BX_Set_Del(set);
 }
 
 
@@ -86,39 +116,84 @@ _nf2arrays(struct BoolExpr *nf)
 ** collapse into the outer nf by same-kind flattening. So this deliberately
 ** does not use any per-element field like a literal's uniqid (reading that
 ** off a non-literal element would be type-punning garbage) or assume any
-** sort order; arrays here are small (branch arity), so a plain quadratic
-** scan is cheap. Caller must BX_Array_Del() the result.
+** sort order. Result order follows arrays[0]. Caller must BX_Array_Del()
+** the result.
 */
 static struct BX_Array *
 _common_items(size_t n, struct BX_Array **arrays)
 {
     struct BX_Array *common;
     struct BoolExpr **items;
+    struct BX_Set **sets = NULL;
+    size_t rest = 0;
     size_t count = 0;
 
     items = malloc(arrays[0]->length * sizeof(struct BoolExpr *));
     if (items == NULL)
         return NULL; // LCOV_EXCL_LINE
 
+    for (size_t k = 1; k < n; ++k)
+        rest += arrays[k]->length;
+
+    /*
+    ** Index the other arrays when the nested scan would do real work, so
+    ** membership is O(1) instead of O(|arrays[k]|). sets[] is allocated with
+    ** n entries and indexed 1..n-1 to stay aligned with arrays[]; sets[0] is
+    ** unused (this also avoids a zero-size malloc when n == 1).
+    */
+    if (arrays[0]->length != 0 &&
+            rest > COMMON_SCAN_MAX_WORK / arrays[0]->length) {
+        sets = malloc(n * sizeof(struct BX_Set *));
+        if (sets == NULL) {
+            free(items); // LCOV_EXCL_LINE
+            return NULL; // LCOV_EXCL_LINE
+        }
+
+        for (size_t k = 1; k < n; ++k) {
+            sets[k] = BX_Set_New();
+            if (sets[k] == NULL) {
+                _free_sets(k, sets); // LCOV_EXCL_LINE
+                free(items);         // LCOV_EXCL_LINE
+                return NULL;         // LCOV_EXCL_LINE
+            }
+
+            for (size_t j = 0; j < arrays[k]->length; ++j) {
+                if (!BX_Set_Insert(sets[k], arrays[k]->items[j])) {
+                    _free_sets(k + 1, sets); // LCOV_EXCL_LINE
+                    free(items);             // LCOV_EXCL_LINE
+                    return NULL;             // LCOV_EXCL_LINE
+                }
+            }
+        }
+    }
+
     for (size_t i = 0; i < arrays[0]->length; ++i) {
         struct BoolExpr *x = arrays[0]->items[i];
         bool in_all = true;
 
         for (size_t k = 1; k < n && in_all; ++k) {
-            bool found = false;
-
-            for (size_t j = 0; j < arrays[k]->length; ++j) {
-                if (arrays[k]->items[j] == x) {
-                    found = true;
-                    break;
-                }
+            if (sets != NULL) {
+                in_all = BX_Set_Contains(sets[k], x);
             }
-            in_all = found;
+            else {
+                bool found = false;
+
+                for (size_t j = 0; j < arrays[k]->length; ++j) {
+                    if (arrays[k]->items[j] == x) {
+                        found = true;
+                        break;
+                    }
+                }
+                in_all = found;
+            }
         }
 
         if (in_all)
             items[count++] = x;
     }
+
+    if (sets != NULL)
+        _free_sets(n, sets);
 
     common = _bx_array_from(count, items);
     if (common == NULL) {
@@ -135,9 +210,14 @@ _common_items(size_t n, struct BX_Array **arrays)
 ** _common_items() above). common must be a subset of xs, which is guaranteed
 ** when common came from _common_items() over an array list that includes xs.
 ** Caller must BX_Array_Del() the result.
+**
+** common_set, when not NULL, must hold exactly the items of common; the
+** caller builds it once and passes it to every call in a _distribute() pass
+** so that a long common list costs O(1) per lookup instead of O(|common|).
 */
 static struct BX_Array *
-_subtract_items(struct BX_Array *xs, struct BX_Array *common)
+_subtract_items(struct BX_Array *xs, struct BX_Array *common,
+               struct BX_Set *common_set)
 {
     struct BoolExpr **items;
     struct BX_Array *result;
@@ -149,12 +229,18 @@ _subtract_items(struct BX_Array *xs, struct BX_Array *common)
 
     for (size_t i = 0; i < xs->length; ++i) {
         struct BoolExpr *x = xs->items[i];
-        bool in_common = false;
+        bool in_common;
 
-        for (size_t j = 0; j < common->length; ++j) {
-            if (common->items[j] == x) {
-                in_common = true;
-                break;
+        if (common_set != NULL) {
+            in_common = BX_Set_Contains(common_set, x);
+        }
+        else {
+            in_common = false;
+            for (size_t j = 0; j < common->length; ++j) {
+                if (common->items[j] == x) {
+                    in_common = true;
+                    break;
+                }
             }
         }
 
@@ -394,10 +480,39 @@ _distribute(BX_Kind kind, struct BoolExpr *nf)
             struct BoolExpr *rnf;
             struct BoolExpr *rest;
             struct BoolExpr **final_xs;
+            struct BX_Set *common_set = NULL;
             size_t fcount;
+            size_t total_items = 0;
+
+            /*
+            ** Every branch is scanned against the same common list below, so
+            ** index it once when that would otherwise be real quadratic work
+            ** (same tradeoff as in _common_items(); NULL means plain scan).
+            */
+            for (size_t i = 0; i < length; ++i)
+                total_items += arrays[i]->length;
+
+            if (total_items > COMMON_SCAN_MAX_WORK / common->length) {
+                common_set = BX_Set_New();
+                if (common_set == NULL) {
+                    BX_Array_Del(common);         // LCOV_EXCL_LINE
+                    _free_arrays(length, arrays); // LCOV_EXCL_LINE
+                    return NULL;                  // LCOV_EXCL_LINE
+                }
+
+                for (size_t i = 0; i < common->length; ++i) {
+                    if (!BX_Set_Insert(common_set, common->items[i])) {
+                        BX_Set_Del(common_set);       // LCOV_EXCL_LINE
+                        BX_Array_Del(common);         // LCOV_EXCL_LINE
+                        _free_arrays(length, arrays); // LCOV_EXCL_LINE
+                        return NULL;                  // LCOV_EXCL_LINE
+                    }
+                }
+            }
 
             reduced = malloc(length * sizeof(struct BoolExpr *));
             if (reduced == NULL) {
+                _free_set(common_set);         // LCOV_EXCL_LINE
                 BX_Array_Del(common);          // LCOV_EXCL_LINE
                 _free_arrays(length, arrays);  // LCOV_EXCL_LINE
                 return NULL;                   // LCOV_EXCL_LINE
@@ -406,11 +521,12 @@ _distribute(BX_Kind kind, struct BoolExpr *nf)
             for (size_t i = 0; i < length; ++i) {
                 struct BX_Array *sub;
 
-                sub = _subtract_items(arrays[i], common);
+                sub = _subtract_items(arrays[i], common, common_set);
                 if (sub == NULL) {
                     for (size_t k = 0; k < i; ++k) // LCOV_EXCL_LINE
                         BX_DecRef(reduced[k]);     // LCOV_EXCL_LINE
                     free(reduced);                 // LCOV_EXCL_LINE
+                    _free_set(common_set);         // LCOV_EXCL_LINE
                     BX_Array_Del(common);          // LCOV_EXCL_LINE
                     _free_arrays(length, arrays);  // LCOV_EXCL_LINE
                     return NULL;                   // LCOV_EXCL_LINE
@@ -429,12 +545,14 @@ _distribute(BX_Kind kind, struct BoolExpr *nf)
                     for (size_t k = 0; k < i; ++k) // LCOV_EXCL_LINE
                         BX_DecRef(reduced[k]);     // LCOV_EXCL_LINE
                     free(reduced);                 // LCOV_EXCL_LINE
+                    _free_set(common_set);         // LCOV_EXCL_LINE
                     BX_Array_Del(common);          // LCOV_EXCL_LINE
                     _free_arrays(length, arrays);  // LCOV_EXCL_LINE
                     return NULL;                   // LCOV_EXCL_LINE
                 }
             }
 
+            _free_set(common_set);
             _free_arrays(length, arrays);
 
             temp = _bx_orandxor_new(kind, length, reduced);
