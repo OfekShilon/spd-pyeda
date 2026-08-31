@@ -135,6 +135,34 @@ def reset_state():
     exprnode.reset()
 
 
+# Runtime equivalence verification for to_cnf()/to_dnf()/simplify(), gated by
+# an env var since the check is exponential -- meant for tracking down C
+# extension bugs, never on by default.
+_VERIFY_EQUIV_ENVVAR = "PYEDA_VERIFY_EQUIV"
+
+# Values that leave verification off, so that the obvious way to disable it
+# (PYEDA_VERIFY_EQUIV=0) doesn't switch it on via plain string truthiness.
+_VERIFY_EQUIV_OFF = frozenset({"", "0", "false", "no", "off"})
+
+
+def _verify_equivalent(orig, result, opname):
+    """If PYEDA_VERIFY_EQUIV is enabled, assert result is equivalent to orig.
+
+    The env var is read on every call so it can be toggled at runtime. Note
+    that the check runs a full satisfiability search over Xor(orig, result),
+    which for a non-CNF argument means the exponential backtracking solver:
+    it is a debugging aid, not something to leave on over large inputs.
+    """
+    if os.getenv(_VERIFY_EQUIV_ENVVAR, "").strip().lower() in _VERIFY_EQUIV_OFF:
+        return
+    if not result.equivalent(orig):
+        raise AssertionError(
+            f"{opname}() produced a non-equivalent result\n"
+            f"input:  {orig}\n"
+            f"output: {result}"
+        )
+
+
 def _assume2point():
     """Convert global assumptions to a point."""
     point = {}
@@ -852,7 +880,9 @@ class Expression(boolfunc.Function):
         if node is self.node:
             return self
         else:
-            return _expr(node)
+            result = _expr(node)
+            _verify_equivalent(self, result, "simplify")
+            return result
 
     @property
     def simple(self):
@@ -881,7 +911,9 @@ class Expression(boolfunc.Function):
         if node is self.node:
             return self
         else:
-            return _expr(node)
+            result = _expr(node)
+            _verify_equivalent(self, result, "to_dnf")
+            return result
 
     def to_cnf(self):
         """Return an equivalent expression in conjunctive normal form."""
@@ -889,7 +921,9 @@ class Expression(boolfunc.Function):
         if node is self.node:
             return self
         else:
-            return _expr(node)
+            result = _expr(node)
+            _verify_equivalent(self, result, "to_cnf")
+            return result
 
     def complete_sum(self):
         """
@@ -900,7 +934,9 @@ class Expression(boolfunc.Function):
         if node is self.node:
             return self
         else:
-            return _expr(node)
+            result = _expr(node)
+            _verify_equivalent(self, result, "complete_sum")
+            return result
     ### End C API ###
 
     def expand(self, vs=None, conj=False):
