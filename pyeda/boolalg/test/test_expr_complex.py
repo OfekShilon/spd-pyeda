@@ -4,6 +4,8 @@ equivalence, Tseitin encoding, and SAT solving on long/complex expressions.
 """
 
 
+import random
+
 from pyeda.boolalg.bfarray import exprvars
 from pyeda.boolalg.expr import (
     ITE,
@@ -557,6 +559,55 @@ class TestNormalFormRoundTrip:
         dnf = f.to_dnf()
         assert cnf.equivalent(dnf)
         assert cnf.equivalent(f)
+
+
+class TestNormalFormFuzz:
+    """Property-based check of to_cnf/to_dnf over randomly nested
+    expressions, with a fixed seed for determinism.
+
+    The recursive distribution logic has enough special cases (common-factor
+    extraction, the cofactor fallback) that any one fixed expression
+    exercises only a slice of it, so this walks a spread of shapes instead.
+
+    This is a general net, not a reproduction of any particular past bug:
+    the expressions it builds stay well under DISTRIBUTE_MAX_PRODUCT, so it
+    does not reach the cofactor fallback that
+    test_cofactor_fallback_and_of_literals_branch covers. Keep that test.
+    """
+
+    NVARS = 6
+    VARS = exprvars("fz", NVARS)
+
+    @classmethod
+    def _rand_clause(cls, rng, k):
+        idx = rng.sample(range(cls.NVARS), k)
+        return [cls.VARS[i] if rng.random() < 0.5 else ~cls.VARS[i] for i in idx]
+
+    @classmethod
+    def _rand_nested(cls, rng, depth):
+        if depth == 0:
+            k = rng.randint(1, 3)
+            return Or(*[And(*cls._rand_clause(rng, rng.randint(1, 3)))
+                        for _ in range(k)])
+        branches = []
+        for _ in range(rng.randint(2, 4)):
+            lits = cls._rand_clause(rng, rng.randint(1, 3))
+            sub = cls._rand_nested(rng, depth - 1)
+            branches.append(And(*lits, sub))
+        return Or(*branches)
+
+    def test_to_cnf_to_dnf_random_nested(self):
+        rng = random.Random(0)
+        for _ in range(300):
+            f = self._rand_nested(rng, depth=2)
+
+            cnf = f.to_cnf()
+            assert cnf.is_cnf() or cnf.is_zero() or cnf.is_one()
+            assert cnf.equivalent(f)
+
+            dnf = f.to_dnf()
+            assert dnf.is_dnf() or dnf.is_zero() or dnf.is_one()
+            assert dnf.equivalent(f)
 
 
 # ===========================================================================
