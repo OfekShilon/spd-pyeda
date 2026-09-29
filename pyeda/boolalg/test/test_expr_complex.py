@@ -4,6 +4,8 @@ equivalence, Tseitin encoding, and SAT solving on long/complex expressions.
 """
 
 
+import functools
+import itertools
 import random
 
 from pyeda.boolalg.bfarray import exprvars
@@ -21,6 +23,7 @@ from pyeda.boolalg.expr import (
     OneHot,
     OneHot0,
     Or,
+    Variable,
     Xor,
     Zero,
     expr2dimacscnf,
@@ -35,6 +38,55 @@ from pyeda.boolalg.minimization import espresso_exprs
 a, b, c, d, e = map(exprvar, "abcde")
 p, q, r = exprvar("p"), exprvar("q"), exprvar("r")
 V = exprvars("v", 20)
+
+
+# ---------------------------------------------------------------------------
+# A monotone DNF with a small CNF but a huge naive distribution
+# ---------------------------------------------------------------------------
+W = exprvars("w", 45)
+
+# Eight groups of eight terms: every term shares w0..w4, plus one group
+# literal and a choice from each of three pairs, so 64 terms of 9 literals.
+_MONOTONE_GROUPS = [
+    (6, (10, 12), (41, 42), (24, 28)), (6, (14, 21), (38, 30), (25, 27)),
+    (5, (18, 20), (35, 39), (23, 26)), (5, (24, 28), (13, 22), (40, 33)),
+    (6, (24, 28), (8, 7), (44, 43)),   (6, (25, 27), (11, 17), (36, 29)),
+    (5, (23, 26), (15, 16), (31, 32)), (5, (24, 28), (9, 19), (34, 37)),
+]
+_MONOTONE_TERMS = tuple(
+    frozenset((0, 1, 2, 3, 4, g) + choice)
+    for g, *pairs in _MONOTONE_GROUPS
+    for choice in itertools.product(*pairs)
+)
+
+
+@functools.cache
+def _minimal_transversals(sets):
+    """The inclusion-minimal sets that intersect every one of sets.
+
+    For a monotone DNF these are exactly the clauses of its minimal CNF
+    (and dually), which gives an oracle independent of pyeda's own
+    conversion -- expr.equivalent() is far too slow at this size.
+    """
+    result = [frozenset()]
+    for s in sets:
+        cands = sorted({r | {x} for r in result for x in s}, key=len)
+        result = []
+        for c in cands:
+            if not any(r <= c for r in result):
+                result.append(c)
+    return set(result)
+
+
+def _lit_sets(nf):
+    """The variable-index sets of nf's clauses/terms, asserting no negations."""
+    out = set()
+    for x in nf.xs:
+        lits = x.xs if x.ASTOP in ("or", "and") else (x,)
+        assert all(isinstance(lit, Variable) for lit in lits), nf
+        out.add(frozenset(lit.indices[0] for lit in lits))
+    return out
+
 
 
 # ===========================================================================
@@ -228,8 +280,9 @@ class TestToCNF:
 
     def test_cofactor_fallback_and_of_literals_branch(self):
         # Regression test for a bug in the cofactor-based distribution
-        # fallback (only reached once a branch count/arity crosses
-        # DISTRIBUTE_MAX_PRODUCT, hence the size of this expression): a
+        # fallback (once reached through the size of this expression; since
+        # distribution now absorbs as it goes, only the CI build with a
+        # lowered DISTRIBUTE_MAX_PRODUCT drives it through that path): a
         # cofactor could collapse to something like And(~a, b), a 2-clause
         # CNF whose clauses happen to be bare literals. _lit_into() mistook
         # that for a single OR-clause (matching by "all children are
@@ -248,6 +301,23 @@ class TestToCNF:
         cnf = ex.to_cnf()
         assert cnf.is_cnf()
         assert cnf.equivalent(ex)
+
+    def test_monotone_dnf_with_many_branches(self, monkeypatch):
+        # Regression test for exponential run time: after w0..w4 are factored
+        # out, this is an OR of 64 four-literal terms. The full product is
+        # 4**64 clauses, and the Shannon-cofactor fallback that replaced it
+        # took ~10 minutes -- it split one variable at a time without merging
+        # the clauses the two cofactors shared, so it also returned thousands
+        # of redundant clauses full of negated literals, for a function whose
+        # minimal CNF (481 clauses) has none.
+        #
+        # PYEDA_VERIFY_EQUIV's SAT-based check alone takes minutes at this
+        # size; _minimal_transversals() is an exact, independent oracle.
+        monkeypatch.delenv("PYEDA_VERIFY_EQUIV", raising=False)
+        ex = Or(*[And(*[W[i] for i in t]) for t in _MONOTONE_TERMS])
+        cnf = ex.to_cnf()
+        assert cnf.is_cnf()
+        assert _lit_sets(cnf) == _minimal_transversals(_MONOTONE_TERMS)
 
 # ===========================================================================
 # DNF conversion tests
@@ -357,6 +427,14 @@ class TestToDNF:
         assert dnf.is_dnf()
         assert dnf.equivalent(dual)
 
+
+    def test_monotone_cnf_with_many_branches(self, monkeypatch):
+        """AND-of-ORs dual of TestToCNF.test_monotone_dnf_with_many_branches."""
+        monkeypatch.delenv("PYEDA_VERIFY_EQUIV", raising=False)
+        ex = And(*[Or(*[W[i] for i in t]) for t in _MONOTONE_TERMS])
+        dnf = ex.to_dnf()
+        assert dnf.is_dnf()
+        assert _lit_sets(dnf) == _minimal_transversals(_MONOTONE_TERMS)
 
 # ===========================================================================
 # NNF conversion tests
