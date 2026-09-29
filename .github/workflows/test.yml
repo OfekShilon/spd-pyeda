@@ -14,7 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.10", "3.13"]
-        build: [release, asserts]
+        build: [release, asserts, cofactor]
         include:
           # What ships.
           - build: release
@@ -29,6 +29,15 @@ jobs:
           # is well-formed, does not crash, and is not the same function.
           - build: asserts
             cflags: "-U NDEBUG"
+            verify: "1"
+          # The asserts configuration again, with the clause cap in flatten.c
+          # lowered so far that to_cnf()/to_dnf() hand nearly every non-trivial
+          # distribution to the Shannon-cofactor fallback, which ordinary
+          # inputs almost never reach. A -D with a value has to go in via
+          # CFLAGS: build_ext's own -D only defines symbols to 1.
+          - build: cofactor
+            cflags: "-U NDEBUG"
+            defines: "-DDISTRIBUTE_MAX_PRODUCT=16"
             verify: "1"
     steps:
       - uses: actions/checkout@v7
@@ -45,6 +54,8 @@ jobs:
         run: python -m pip install --upgrade pip setuptools pytest
 
       - name: Build extension in place
+        env:
+          CFLAGS: ${{ matrix.defines }}
         run: |
           set -eo pipefail
           python setup.py build_ext --inplace --force ${{ matrix.cflags }} 2>&1 | tee build.log
@@ -55,6 +66,12 @@ jobs:
             # check the compiler line rather than trusting the flag took.
             grep -q -- '-DNDEBUG.*-UNDEBUG' build.log || {
               echo "::error::-UNDEBUG did not follow -DNDEBUG; asserts are still compiled out"
+              exit 1
+            }
+          fi
+          if [ -n "${{ matrix.defines }}" ]; then
+            grep -q -- '${{ matrix.defines }}' build.log || {
+              echo "::error::${{ matrix.defines }} is missing from the compiler line"
               exit 1
             }
           fi
